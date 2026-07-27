@@ -8,7 +8,7 @@ A request is a POST to a method path under the version prefix, for example `POST
 
 An error reply is the object `{"error":"<code>","message":"<text>"}`. The codes a client sees are `bad_request` and `bad_address` at 400, `not_found` at 404, `unknown_method` at 404, `method_not_allowed` at 405, `too_large` at 413, `head_too_large` at 431, and `busy` or `unavailable` at 503.
 
-The methods are `node_info`, `head`, `validators`, `chain_params`, `staking_state`, `get_account`, `get_transaction`, `submit_transaction`, `get_block`, `pending`, `supply`, `get_container`, `get_storage`, and `get_events`.
+The methods are `node_info`, `head`, `validators`, `chain_params`, `staking_state`, `get_account`, `get_transaction`, `submit_transaction`, `get_block`, `pending`, `supply`, `get_container`, `get_storage`, `get_events`, `finalized_head`, `burn_block`, and `burn_heights_after`.
 
 ## node_info
 
@@ -328,4 +328,60 @@ POST /v1/get_events
 ```
 ```
 {"height":10420,"count":1,"events":[{"contract":"Q1C0DE...","selector":"1a2b3c4d","data":"00ff..."}]}
+```
+
+## finalized_head
+
+Returns the height of the highest finalized block the node holds. The bridge exit watcher reads this to learn how far the chain has settled before it asks for a burn.
+
+**Path** `POST /v1/finalized_head`
+
+Takes no request fields. The reply carries `head`, the finalized height as an integer.
+
+```
+POST /v1/finalized_head
+{}
+```
+```
+{"head":10420}
+```
+
+## burn_block
+
+Returns the archived material for a finalized bridge-burn block, so the burn can be proven off chain. A block is archived only when it carries a bridge burn, so this answers for burn heights and returns `not_found` at 404 for any other height.
+
+**Path** `POST /v1/burn_block`
+
+| request field | type | meaning |
+| --- | --- | --- |
+| height | integer | the finalized block height |
+
+The reply carries `height`, `header_bytes`, the block header in hex, `certificate`, the QORUS finality certificate in hex, and `events`, the ordered event leaves in hex that the header event root was computed over. A caller rebuilds the burn inclusion proof from `events` and verifies `certificate` against its own pinned committee, so the reply is untrusted data and nothing is taken on the node's word.
+
+```
+POST /v1/burn_block
+{"height":10420}
+```
+```
+{"height":10420,"header_bytes":"00a1...","certificate":"5c2f...","events":["7174762f...","..."]}
+```
+
+## burn_heights_after
+
+Returns the finalized heights that carry a bridge burn and sit above a cursor, in order, so the exit watcher can step from burn to burn without walking every height.
+
+**Path** `POST /v1/burn_heights_after`
+
+| request field | type | meaning |
+| --- | --- | --- |
+| cursor | integer | return burn heights strictly greater than this |
+
+The reply carries `cursor`, `count`, and `heights`, the ordered burn heights above the cursor.
+
+```
+POST /v1/burn_heights_after
+{"cursor":10000}
+```
+```
+{"cursor":10000,"count":2,"heights":[10420,10930]}
 ```
