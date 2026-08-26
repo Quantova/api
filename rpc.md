@@ -4,11 +4,11 @@ The gateway is the client facing surface of a Quantova node. Every method is an 
 
 ## Transport
 
-A request is a POST to a method path under the version prefix, for example `POST /v1/node_info`. The body is a flat JSON object, and an empty body is read as an empty object so a method with no fields needs no body. The reply carries `Content-Type application/json`. The gateway answers an OPTIONS preflight with 204 and sets permissive CORS headers, and it rejects any verb other than POST with 405. The request head is capped at 16 KiB and the body at 2 MiB, a connection over the cap is refused, and a slow request times out at fifteen seconds. A local devnet node serves the gateway on `127.0.0.1:8645`.
+A request is a POST to a method path under the version prefix, for example `POST /v1/node_info`. The body is a flat JSON object, and an empty body is read as an empty object so a method with no fields needs no body. The reply carries `Content-Type application/json`. The gateway answers an OPTIONS preflight with 204 and sets permissive CORS headers, and it rejects any verb other than POST with 405. The request head is capped at 16 KiB and the body at 1 MiB, a connection over the cap is refused, each read times out at fifteen seconds, and the whole request head and body must arrive within twenty seconds. A local devnet node serves the gateway on `127.0.0.1:8645`.
 
-An error reply is the object `{"error":"<code>","message":"<text>"}`. The codes a client sees are `bad_request` and `bad_address` at 400, `not_found` at 404, `unknown_method` at 404, `method_not_allowed` at 405, `too_large` at 413, `head_too_large` at 431, and `busy` or `unavailable` at 503.
+An error reply is the object `{"error":"<code>","message":"<text>"}`. The codes a client sees are `bad_request`, `bad_address`, and `storage_too_large` at 400, `not_found` at 404, `unknown_method` at 404, `method_not_allowed` at 405, `too_large` at 413, `head_too_large` at 431, `forbidden` at 403, `timeout` at 408, `too_many`, `rate_limited`, or `banned` at 429, and `busy` or `unavailable` at 503. A body that is not valid UTF-8, or shorter than its declared length, is `bad_request` at 400.
 
-The methods are `node_info`, `head`, `validators`, `chain_params`, `staking_state`, `get_account`, `get_transaction`, `submit_transaction`, `get_block`, `pending`, `supply`, `get_container`, `get_storage`, `get_events`, `finalized_head`, `burn_block`, and `burn_heights_after`.
+The methods are `node_info`, `head`, `validators`, `chain_params`, `staking_state`, `get_account`, `get_transaction`, `submit_transaction`, `get_block`, `pending`, `supply`, `get_container`, `get_storage`, `get_storage_at`, `get_events`, `get_side_events`, `get_bridged_balance`, `get_bridged_supply`, `get_asset_balance`, `get_asset_supply`, `governance_referenda`, `genesis_accounts`, `finalized_head`, `burn_block`, and `burn_heights_after`.
 
 ## node_info
 
@@ -50,14 +50,14 @@ The request has no fields.
 | --- | --- | --- |
 | height | integer | the height of the head |
 | block | string or null | the block id as a QBK identifier, null before the first finalized block |
-| state_root | string | the state root as a QST identifier |
+| q_root | string | the Q state root of the head |
 
 ```
 POST /v1/head
 {}
 ```
 ```
-{"height":10428,"block":"QBK1QW8P...","state_root":"QST1M4RD..."}
+{"height":10428,"block":"QBK1QW8P...","q_root":"QST1M4RD..."}
 ```
 
 ## validators
@@ -91,14 +91,14 @@ Returns the staking and governance parameters the chain runs under.
 
 The request has no fields.
 
-The response has a `staking` object and a `governance` object. The staking object carries `native_unit`, `min_stake`, `staking_pool`, `session_days`, `high_session_tx`, `low_session_bps`, `high_session_bps`, `reward_cap_micro_usd_per_session`, `mainnet_blackout_days`, `bond_lock_days`, `unbonding_days`, `vest_cliff_days`, `vest_tranche_days`, and `vest_tranches`, each an integer. The governance object carries `conviction_max_x10`, an integer, and `tracks`, an array where each track carries `code`, `deposit`, `approval_bps`, `support_bps`, and `period_seconds`. There are seven governance tracks and the example below shows the first.
+The response has a `staking` object and a `governance` object. The staking object carries `native_unit`, `min_stake`, `staking_pool`, `session_emission`, `session_days`, `high_session_tx`, `mainnet_blackout_days`, `bond_lock_days`, `unbonding_days`, and `reward_vest_days`, each an integer. The governance object carries `conviction_max_x10`, an integer, and `tracks`, an array where each track carries `code`, `deposit`, `threshold_bps`, and `period_seconds`. There are seven governance tracks and the example below shows the first.
 
 ```
 POST /v1/chain_params
 {}
 ```
 ```
-{"staking":{"native_unit":1000000,"min_stake":2000000000,"staking_pool":685714000000,"session_days":182,"high_session_tx":50000000000,"low_session_bps":100,"high_session_bps":175,"reward_cap_micro_usd_per_session":4000000000,"mainnet_blackout_days":365,"bond_lock_days":90,"unbonding_days":21,"vest_cliff_days":365,"vest_tranche_days":120,"vest_tranches":4},"governance":{"conviction_max_x10":25,"tracks":[{"code":1,"deposit":600000,"approval_bps":8000,"support_bps":4000,"period_seconds":1209600}]}}
+{"staking":{"native_unit":1000000,"min_stake":2000000000,"staking_pool":685714000000,"session_emission":0,"session_days":182,"high_session_tx":50000000000,"mainnet_blackout_days":365,"bond_lock_days":90,"unbonding_days":21,"reward_vest_days":365},"governance":{"conviction_max_x10":25,"tracks":[{"code":1,"deposit":600000,"threshold_bps":4000,"period_seconds":1209600}]}}
 ```
 
 ## staking_state
@@ -163,14 +163,14 @@ Returns the status and, when known, the fields of a transaction by its id.
 | --- | --- | --- |
 | tx_id | string | the QTX transaction id |
 
-The response always carries `tx_id` and `status`, where status is `finalised`, `pending`, or `unknown`. A finalised transaction also carries `height` and `block`. A finalised or pending transaction also carries the transaction fields `from`, `to`, `value`, `fee`, `nonce`, `meter_limit`, `scheme`, `signature`, and `raw`. The `value`, `fee`, `from`, `to`, `signature`, and `raw` fields are strings, where `signature` and `raw` are hex, and `nonce`, `meter_limit`, and `scheme` are integers.
+The response always carries `tx_id` and `status`, where status is `finalised`, `pending`, or `unknown`. A finalised transaction also carries `height` and `block`. A finalised or pending transaction also carries the transaction fields `from`, `to`, `kind`, `value`, `fee`, `nonce`, `meter_limit`, `scheme`, `signature`, and `raw`, and a deploy also carries `contract`, the address the deploy creates. The `value`, `fee`, `from`, `to`, `kind`, `signature`, `raw`, and `contract` fields are strings, where `signature` and `raw` are hex, and `nonce`, `meter_limit`, and `scheme` are integers. The `kind` names the call, one of `transfer`, `deploy`, `call`, `bridge_mint`, `bridge_exit`, `bridge_settle`, `bridge_guardian`, `register`, `key_register`, `evidence`, or `governance`.
 
 ```
 POST /v1/get_transaction
 {"tx_id":"QTX1A9F0..."}
 ```
 ```
-{"tx_id":"QTX1A9F0...","status":"finalised","height":10420,"block":"QBK1QW8P...","from":"Q1QW8P...","to":"Q1M4RD...","value":"1000","fee":"500","nonce":2,"meter_limit":100000,"scheme":1,"signature":"a1b2...","raw":"00ff..."}
+{"tx_id":"QTX1A9F0...","status":"finalised","height":10420,"block":"QBK1QW8P...","from":"Q1QW8P...","to":"Q1M4RD...","kind":"transfer","value":"1000","fee":"500","nonce":2,"meter_limit":100000,"scheme":1,"signature":"a1b2...","raw":"00ff..."}
 ```
 
 ## submit_transaction
@@ -183,7 +183,7 @@ Submits a signed transaction to the mempool. The transaction is the canonical wr
 | --- | --- | --- |
 | tx | string | the canonical signed transaction in hex |
 
-On acceptance the reply is `verdict` `accepted`, `state` either `fresh` or `known`, and `tx_id`. On rejection the reply is `verdict` `rejected` and `reason`. The reason is one of `malformed`, `unknown_sender`, `unsupported_scheme`, `bad_signature`, `bad_nonce`, `bad_call`, `self_transfer`, `meter_limit_too_low`, `fee_too_low`, or `insufficient_funds`. A `bad_nonce` rejection also carries `expected` and `got`.
+On acceptance the reply is `verdict` `accepted`, `state` either `fresh` or `known`, and `tx_id`. On rejection the reply is `verdict` `rejected` and `reason`. The reason is one of `malformed`, `unknown_sender`, `unsupported_scheme`, `bad_signature`, `bad_nonce`, `bad_call`, `self_transfer`, `meter_limit_too_low`, `fee_too_low`, `insufficient_funds`, `wrong_chain`, `pool_full`, `sender_queue_full`, or `rate_limited`. A `bad_nonce` rejection also carries `expected` and `got`. A `wrong_chain` rejection means the wrapper carried a chain id that is not this chain, and a client must sign for the chain id in `node_info` before it resubmits.
 
 ```
 POST /v1/submit_transaction
@@ -209,7 +209,9 @@ Returns a finalized block by height or by block id. Supply exactly one of the tw
 | height | integer | the block height |
 | block | string | the block id |
 | parent | string | the parent block id as a QBK identifier |
-| state_root | string | the state root as a QST identifier |
+| q_root | string | the Q state root as a QST identifier |
+| transaction_root | string | the transaction root in hex |
+| event_root | string | the event root in hex |
 | proposer | string | the proposer address |
 | time | integer | the block time |
 | tx_count | integer | the number of transactions |
@@ -223,7 +225,7 @@ POST /v1/get_block
 {"height":10420}
 ```
 ```
-{"height":10420,"block":"QBK1QW8P...","parent":"QBK1H3K2...","state_root":"QST1M4RD...","proposer":"Q1QW8P...","time":1700004200,"tx_count":1,"extra_data":"","tx_ids":["QTX1A9F0..."]}
+{"height":10420,"block":"QBK1QW8P...","parent":"QBK1H3K2...","q_root":"QST1M4RD...","transaction_root":"7a1b...","event_root":"9c2d...","proposer":"Q1QW8P...","time":1700004200,"tx_count":1,"extra_data":"","tx_ids":["QTX1A9F0..."]}
 ```
 
 ## pending
@@ -234,14 +236,14 @@ Returns the transactions currently in the mempool.
 
 The request has no fields.
 
-The reply carries `count` and `transactions`, an array where each entry carries `tx_id` and the same transaction fields as `get_transaction`.
+The reply carries `count`, the total pending, `returned`, the number served, `truncated`, whether the node held back entries, and `transactions`, an array where each entry carries `tx_id` and the same transaction fields as `get_transaction`. The node serves at most one thousand entries and stops within a response byte budget, so a large mempool is truncated.
 
 ```
 POST /v1/pending
 {}
 ```
 ```
-{"count":1,"transactions":[{"tx_id":"QTX1A9F0...","from":"Q1QW8P...","to":"Q1M4RD...","value":"1000","fee":"500","nonce":2,"meter_limit":100000,"scheme":1,"signature":"a1b2...","raw":"00ff..."}]}
+{"count":1,"returned":1,"truncated":false,"transactions":[{"tx_id":"QTX1A9F0...","from":"Q1QW8P...","to":"Q1M4RD...","kind":"transfer","value":"1000","fee":"500","nonce":2,"meter_limit":100000,"scheme":1,"signature":"a1b2...","raw":"00ff..."}]}
 ```
 
 ## supply
@@ -300,11 +302,32 @@ Returns the contract storage slots at a contract address.
 | --- | --- | --- |
 | address | string | the Q1 contract address |
 
-The reply carries `address` and `slots`, an array where each entry carries `slot`, the slot key in hex, and `value`, the slot value as a decimal string. An address that is not a Q1 address returns `bad_address`.
+The reply carries `address`, `count`, the total slot count, `returned`, the number served, `truncated`, whether the node held back slots, and `slots`, an array where each entry carries `slot`, the slot key in hex, and `value`, the slot value as a decimal string. The node serves at most one thousand slots, so a large map is truncated. An address that is not a Q1 address returns `bad_address`, and a contract whose storage is too large to serve over the RPC returns `storage_too_large` at 400.
 
 ```
 POST /v1/get_storage
 {"address":"Q1C0DE..."}
+```
+```
+{"address":"Q1C0DE...","count":1,"returned":1,"truncated":false,"slots":[{"slot":"0000...0001","value":"42"}]}
+```
+
+## get_storage_at
+
+Returns the named contract storage slots at a contract address, so a client reads only the keys it asks for.
+
+**Path** `POST /v1/get_storage_at`
+
+| request field | type | meaning |
+| --- | --- | --- |
+| address | string | the Q1 contract address |
+| keys | array | the slot keys to read, each a thirty two byte hex string |
+
+At most sixty four keys are read per request, and a key that is not thirty two bytes of hex returns `bad_request`. The reply carries `address` and `slots`, an array where each entry carries `slot`, the slot key in hex, and `value`, the slot value as a decimal string. Only keys the contract holds appear in the reply. An address that is not a Q1 address returns `bad_address`, and a contract whose storage is too large to serve over the RPC returns `storage_too_large` at 400.
+
+```
+POST /v1/get_storage_at
+{"address":"Q1C0DE...","keys":["0000...0001"]}
 ```
 ```
 {"address":"Q1C0DE...","slots":[{"slot":"0000...0001","value":"42"}]}
@@ -328,6 +351,144 @@ POST /v1/get_events
 ```
 ```
 {"height":10420,"count":1,"events":[{"contract":"Q1C0DE...","selector":"1a2b3c4d","data":"00ff..."}]}
+```
+
+## get_side_events
+
+Returns the side events recorded at a block height. A side event is a state change the chain records outside the contract event log, such as a stake bond, a governance vote, a bridge move, or a treasury spend.
+
+**Path** `POST /v1/get_side_events`
+
+| request field | type | meaning |
+| --- | --- | --- |
+| height | integer | the block height |
+
+The reply carries `height`, `count`, and `events`, an array where each entry carries `index`, `kind`, `actor`, `target`, `amount`, `ref`, and `aux`, and further fields that depend on the kind. The `index` is the position in the block, `kind` names the side event, `actor` and `target` are addresses or empty, `amount` is a decimal string, and `ref` and `aux` are integers. A missing height returns `bad_request`.
+
+```
+POST /v1/get_side_events
+{"height":10420}
+```
+```
+{"height":10420,"count":1,"events":[{"index":0,"kind":"bond","actor":"Q1QW8P...","target":"","amount":"2000000000","ref":0,"aux":0,"fee":"500"}]}
+```
+
+## get_bridged_balance
+
+Returns a holder's balance of a bridged asset and that asset's bridged supply.
+
+**Path** `POST /v1/get_bridged_balance`
+
+| request field | type | meaning |
+| --- | --- | --- |
+| asset_id | string | the bridged asset id, sixteen bytes of hex |
+| holder | string | the holder, a Q1 address or thirty two bytes of hex |
+
+The reply carries `asset_id` in hex, `holder` in hex, `holder_address` as a Q1 string, `balance` as a decimal string, and `supply` as a decimal string.
+
+```
+POST /v1/get_bridged_balance
+{"asset_id":"00112233445566778899aabbccddeeff","holder":"Q1QW8P..."}
+```
+```
+{"asset_id":"00112233445566778899aabbccddeeff","holder":"1111...","holder_address":"Q1QW8P...","balance":"0","supply":"0"}
+```
+
+## get_bridged_supply
+
+Returns the bridged supply of an asset, its cap, and whether it is registered.
+
+**Path** `POST /v1/get_bridged_supply`
+
+| request field | type | meaning |
+| --- | --- | --- |
+| asset_id | string | the bridged asset id, sixteen bytes of hex |
+
+The reply carries `asset_id` in hex, `supply` as a decimal string, `cap` as a decimal string, and `registered`, a boolean.
+
+```
+POST /v1/get_bridged_supply
+{"asset_id":"00112233445566778899aabbccddeeff"}
+```
+```
+{"asset_id":"00112233445566778899aabbccddeeff","supply":"0","cap":"0","registered":false}
+```
+
+## get_asset_balance
+
+Returns a holder's balance of an issuer native asset and that asset's supply.
+
+**Path** `POST /v1/get_asset_balance`
+
+| request field | type | meaning |
+| --- | --- | --- |
+| issuer | string | the issuer, a Q1 address or thirty two bytes of hex |
+| holder | string | the holder, a Q1 address or thirty two bytes of hex |
+
+The reply carries `issuer` as a Q1 string, `holder` as a Q1 string, `balance` as a decimal string, and `supply` as a decimal string.
+
+```
+POST /v1/get_asset_balance
+{"issuer":"Q1ISSUE...","holder":"Q1QW8P..."}
+```
+```
+{"issuer":"Q1ISSUE...","holder":"Q1QW8P...","balance":"0","supply":"0"}
+```
+
+## get_asset_supply
+
+Returns the supply of an issuer native asset.
+
+**Path** `POST /v1/get_asset_supply`
+
+| request field | type | meaning |
+| --- | --- | --- |
+| issuer | string | the issuer, a Q1 address or thirty two bytes of hex |
+
+The reply carries `issuer` as a Q1 string and `supply` as a decimal string.
+
+```
+POST /v1/get_asset_supply
+{"issuer":"Q1ISSUE..."}
+```
+```
+{"issuer":"Q1ISSUE...","supply":"0"}
+```
+
+## governance_referenda
+
+Returns the most recent governance referenda the chain holds.
+
+**Path** `POST /v1/governance_referenda`
+
+The request has no fields.
+
+The reply carries `referenda`, an array where each entry carries `id`, `track`, `proposer`, `deposit`, `submitted_at`, `aye_stake`, `nay_stake`, `status`, and `killed`. The `id`, `track`, and `submitted_at` are integers, `proposer` is a Q1 address, `deposit`, `aye_stake`, and `nay_stake` are decimal strings, `status` is one of `deciding`, `approved`, or `rejected`, and `killed` is a boolean. The node serves at most one thousand entries, the most recent first.
+
+```
+POST /v1/governance_referenda
+{}
+```
+```
+{"referenda":[{"id":1,"track":1,"proposer":"Q1QW8P...","deposit":"600000","submitted_at":1700004200,"aye_stake":"0","nay_stake":"0","status":"deciding","killed":false}]}
+```
+
+## genesis_accounts
+
+Returns the genesis account allocations and the genesis supply baseline.
+
+**Path** `POST /v1/genesis_accounts`
+
+The request has no fields.
+
+The reply carries `count`, the total allocation count, `returned`, the number served, `truncated`, whether the node held back rows, `supply_quon`, the genesis supply as a decimal string, and `accounts`, an array where each entry carries `address`, a Q1 string, `balance`, a decimal string, and `scheme`, an integer. The node serves at most one thousand rows.
+
+```
+POST /v1/genesis_accounts
+{}
+```
+```
+{"count":2,"returned":2,"truncated":false,"supply_quon":"4571429000000","accounts":[{"address":"Q1QW8P...","balance":"5000","scheme":1}]}
 ```
 
 ## finalized_head
@@ -376,7 +537,7 @@ Returns the finalized heights that carry a bridge burn and sit above a cursor, i
 | --- | --- | --- |
 | cursor | integer | return burn heights strictly greater than this |
 
-The reply carries `cursor`, `count`, and `heights`, the ordered burn heights above the cursor.
+The reply carries `cursor`, `count`, and `heights`, the ordered burn heights above the cursor. The node serves a bounded number of heights per call, so a client steps with the last height it saw as the next cursor.
 
 ```
 POST /v1/burn_heights_after
